@@ -21,6 +21,7 @@ const BaseURL string = "https://graph.microsoft.com"
 
 // APIVersion represents the APIVersion of msgraph used by this implementation
 const APIVersion string = "v1.0"
+const BetaAPIVersion string = "beta"
 
 // MaxPageSize is the maximum Page size for an API-call. This will be rewritten to use paging some day. Currently limits environments to 999 entries (e.g. Users, CalendarEvents etc.)
 const MaxPageSize int = 999

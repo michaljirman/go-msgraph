@@ -120,7 +120,7 @@ func (g *GraphClient) makeGETAPICall(apicall string, getParams url.Values, v int
 	// TODO: Improve performance with using $skip & paging instead of retrieving all results with $top
 	// TODO: MaxPageSize is currently 999, if there are any time more than 999 entries this will make the program unpredictable... hence start to use paging (!)
 	getParams.Add("$top", strconv.Itoa(MaxPageSize))
-	req.URL.RawQuery = getParams.Encode() // set query parameters
+	//req.URL.RawQuery = getParams.Encode() // set query parameters
 
 	return g.performRequest(req, v)
 }
@@ -150,7 +150,11 @@ func (g *GraphClient) performRequest(req *http.Request, v interface{}) error {
 		return fmt.Errorf("HTTP response read error: %v of http.Request: %v", err, req.URL)
 	}
 
-	return json.Unmarshal(body, &v) // return the error of the json unmarshal
+	if v != nil {
+		return json.Unmarshal(body, &v)
+	}
+
+	return nil
 }
 
 // ListUsers returns a list of all users
@@ -171,6 +175,23 @@ func (g *GraphClient) ListUsers() (Users, error) {
 // Reference: https://developer.microsoft.com/en-us/graph/docs/api-reference/v1.0/api/group_list
 func (g *GraphClient) ListGroups() (Groups, error) {
 	resource := "/groups"
+
+	var marsh struct {
+		Groups Groups `json:"value"`
+	}
+	err := g.makeGETAPICall(resource, nil, &marsh)
+	marsh.Groups.setGraphClient(g)
+	return marsh.Groups, err
+}
+
+// ListGroups returns a list of all groups filtered by DisplayName
+//
+// Reference: https://developer.microsoft.com/en-us/graph/docs/api-reference/v1.0/api/group_list
+func (g *GraphClient) ListGroupsByName(groupName string) (Groups, error) {
+	resource := "/groups"
+	if groupName != "" {
+		resource += fmt.Sprintf("?$filter=DisplayName eq '%s'", groupName)
+	}
 
 	var marsh struct {
 		Groups Groups `json:"value"`
@@ -236,4 +257,112 @@ func (g *GraphClient) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("Can't get Token: %v", err)
 	}
 	return nil
+}
+
+// List the directory roles that are activated in the tenant.
+// https://docs.microsoft.com/en-us/graph/api/directoryrole-list?view=graph-rest-1.0&tabs=http
+func (g *GraphClient) ListDirectoryRoles() (DirectoryRoles, error) {
+	resource := "/directoryRoles"
+	var marsh struct {
+		DirectoryRoles DirectoryRoles `json:"value"`
+	}
+	err := g.makeGETAPICall(resource, nil, &marsh)
+	marsh.DirectoryRoles.setGraphClient(g)
+	return marsh.DirectoryRoles, err
+}
+
+// List the directory roles that are activated in the tenant.
+// https://docs.microsoft.com/en-us/graph/api/directoryrole-list?view=graph-rest-1.0&tabs=http
+func (g *GraphClient) ListDirectoryRolesByName(roleName string) (DirectoryRoles, error) {
+	resource := "/directoryRoles"
+	if roleName != "" {
+		resource += fmt.Sprintf("?$filter=DisplayName eq '%s'", roleName)
+	}
+
+	var marsh struct {
+		DirectoryRoles DirectoryRoles `json:"value"`
+	}
+	err := g.makeGETAPICall(resource, nil, &marsh)
+	marsh.DirectoryRoles.setGraphClient(g)
+	return marsh.DirectoryRoles, err
+}
+
+// List the directory roles that are activated in the tenant.
+// https://docs.microsoft.com/en-us/graph/api/directoryrole-list?view=graph-rest-1.0&tabs=http
+func (g *GraphClient) ListDirectoryRoleTemplates() (DirectoryRoleTemplates, error) {
+	resource := "/directoryRoleTemplates"
+
+	var marsh struct {
+		DirectoryRoleTemplates DirectoryRoleTemplates `json:"value"`
+	}
+	err := g.makeGETAPICall(resource, nil, &marsh)
+	marsh.DirectoryRoleTemplates.setGraphClient(g)
+	return marsh.DirectoryRoleTemplates, err
+}
+
+// Add directory role member.
+// https://docs.microsoft.com/en-us/graph/api/directoryrole-post-members?view=graph-rest-1.0&tabs=http
+func (g *GraphClient) AddDirectoryRoleMemberToGroup(roleID, groupID string) error {
+	if g.TenantID == "" {
+		return fmt.Errorf("tenant ID is empty")
+	}
+	u, err := url.ParseRequestURI(fmt.Sprintf("%s/directoryRoles/%s/members/$ref", BaseURL+"/"+APIVersion, roleID))
+	if err != nil {
+		return fmt.Errorf("unable to parse URI: %v", err)
+	}
+
+	requestData := map[string]string{
+		"@odata.id": fmt.Sprintf("%s/directoryObjects/%s", BaseURL+"/"+APIVersion, groupID),
+	}
+	requestDataJson, err := json.Marshal(requestData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request data: %w", err)
+	}
+	req, err := http.NewRequest("POST", u.String(), bytes.NewBuffer(requestDataJson))
+	if err != nil {
+		return fmt.Errorf("HTTP Request Error: %v", err)
+	}
+	req.Header.Add("Authorization", g.token.GetAccessToken())
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("Content-Length", strconv.Itoa(len(requestDataJson)))
+
+	err = g.performRequest(req, nil) // perform the prepared request
+	if err != nil {
+		return fmt.Errorf("failed to assign built-in role to group: %v", err)
+	}
+	return nil
+}
+
+// Activate a directory role. To read a directory role or update its members, it must first be activated in the tenant.
+// https://docs.microsoft.com/en-us/graph/api/directoryrole-post-directoryroles?view=graph-rest-1.0&tabs=http
+func (g *GraphClient) ActivateDirectoryRole(directoryRoleTemplateID string) (*DirectoryRole, error) {
+	if g.TenantID == "" {
+		return nil, fmt.Errorf("tenant id is empty")
+	}
+	u, err := url.ParseRequestURI(fmt.Sprintf("%s/directoryRoles", BaseURL+"/"+APIVersion))
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse URI: %v", err)
+	}
+
+	requestData := map[string]string{
+		"roleTemplateId": directoryRoleTemplateID,
+	}
+	requestDataJson, err := json.Marshal(requestData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request data: %w", err)
+	}
+	req, err := http.NewRequest("POST", u.String(), bytes.NewBuffer(requestDataJson))
+	if err != nil {
+		return nil, fmt.Errorf("HTTP Request Error: %v", err)
+	}
+	req.Header.Add("Authorization", g.token.GetAccessToken())
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("Content-Length", strconv.Itoa(len(requestDataJson)))
+
+	dirRole := &DirectoryRole{graphClient: g}
+	err = g.performRequest(req, &dirRole) // perform the prepared request
+	if err != nil {
+		return nil, fmt.Errorf("failed to assign built-in role to group: %v", err)
+	}
+	return dirRole, nil
 }
