@@ -41,7 +41,7 @@ func (g *GraphClient) String() string {
 
 // NewGraphClient creates a new GraphClient instance with the given parameters and grab's a token.
 //
-// Rerturns an error if the token can not be initialized. This method does not have to be used to create a new GraphClient
+// Returns an error if the token can not be initialized. This method does not have to be used to create a new GraphClient
 func NewGraphClient(tenantID, applicationID, clientSecret string) (*GraphClient, error) {
 	g := GraphClient{TenantID: tenantID, ApplicationID: applicationID, ClientSecret: clientSecret}
 	g.apiCall.Lock()         // lock because we will refresh the token
@@ -52,7 +52,7 @@ func NewGraphClient(tenantID, applicationID, clientSecret string) (*GraphClient,
 // refreshToken refreshes the current Token. Grab's a new one and saves it within the GraphClient instance
 func (g *GraphClient) refreshToken() error {
 	if g.TenantID == "" {
-		return fmt.Errorf("Tenant ID is empty")
+		return fmt.Errorf("tenant ID is empty")
 	}
 	resource := fmt.Sprintf("/%v/oauth2/token", g.TenantID)
 	data := url.Values{}
@@ -63,7 +63,7 @@ func (g *GraphClient) refreshToken() error {
 
 	u, err := url.ParseRequestURI(LoginBaseURL)
 	if err != nil {
-		return fmt.Errorf("Unable to parse URI: %v", err)
+		return fmt.Errorf("unable to parse URI: %w", err)
 	}
 
 	u.Path = resource
@@ -79,14 +79,14 @@ func (g *GraphClient) refreshToken() error {
 	var newToken Token
 	err = g.performRequest(req, &newToken) // perform the prepared request
 	if err != nil {
-		return fmt.Errorf("Error on getting msgraph Token: %v", err)
+		return fmt.Errorf("failed to get msgraph token: %w", err)
 	}
 	g.token = newToken
 	return err
 }
 
 // makeGETAPICall performs an API-Call to the msgraph API. This func uses sync.Mutex to synchronize all API-calls
-func (g *GraphClient) makeGETAPICall(apicall string, getParams url.Values, v interface{}) error {
+func (g *GraphClient) makeGETAPICall(resource string, getParams url.Values, v interface{}) error {
 	g.apiCall.Lock()
 	defer g.apiCall.Unlock() // unlock when the func returns
 	// Check token
@@ -99,11 +99,11 @@ func (g *GraphClient) makeGETAPICall(apicall string, getParams url.Values, v int
 
 	reqURL, err := url.ParseRequestURI(BaseURL)
 	if err != nil {
-		return fmt.Errorf("Unable to parse URI %v: %v", BaseURL, err)
+		return fmt.Errorf("unable to parse URI %s: %w", BaseURL, err)
 	}
 
 	// Add Version to API-Call, the leading slash is always added by the calling func
-	reqURL.Path = "/" + APIVersion + apicall
+	reqURL.Path = "/" + APIVersion + resource
 
 	req, err := http.NewRequest("GET", reqURL.String(), nil)
 	if err != nil {
@@ -118,9 +118,48 @@ func (g *GraphClient) makeGETAPICall(apicall string, getParams url.Values, v int
 	}
 
 	// TODO: Improve performance with using $skip & paging instead of retrieving all results with $top
-	// TODO: MaxPageSize is currently 999, if there are any time more than 999 entries this will make the program unpredictable... hence start to use paging (!)
-	getParams.Add("$top", strconv.Itoa(MaxPageSize))
-	//req.URL.RawQuery = getParams.Encode() // set query parameters
+	// TODO:  PageSize is currently 999, if there are any time more than 999 entries this will make the program unpredictable... hence start to use paging (!)
+	// TODO: Some endpoints do not support $top param;
+	//getParams.Add("$top", strconv.Itoa(MaxPageSize))
+	req.URL.RawQuery = getParams.Encode() // set query parameters
+
+	return g.performRequest(req, v)
+}
+
+// makePOSTAPICall performs an API-Call to the MS Graph API. This func uses sync.Mutex to synchronize all API-calls
+func (g *GraphClient) makePOSTAPICall(resource string, getParams url.Values, data []byte, v interface{}) error {
+	g.apiCall.Lock()
+	defer g.apiCall.Unlock() // unlock when the func returns
+	// Check token
+	if g.token.WantsToBeRefreshed() { // Token not valid anymore?
+		err := g.refreshToken()
+		if err != nil {
+			return err
+		}
+	}
+
+	reqURL, err := url.ParseRequestURI(BaseURL)
+	if err != nil {
+		return fmt.Errorf("unable to parse URI %s: %w", BaseURL, err)
+	}
+
+	// Add Version to API-Call, the leading slash is always added by the calling func
+	reqURL.Path = "/" + APIVersion + resource
+
+	req, err := http.NewRequest("POST", reqURL.String(), bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("HTTP request error: %v", err)
+	}
+
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("Authorization", g.token.GetAccessToken())
+	req.Header.Add("Content-Length", strconv.Itoa(len(data)))
+
+	if getParams == nil { // initialize getParams if it's nil
+		getParams = url.Values{}
+	}
+
+	req.URL.RawQuery = getParams.Encode() // set query parameters
 
 	return g.performRequest(req, v)
 }
@@ -170,6 +209,20 @@ func (g *GraphClient) ListUsers() (Users, error) {
 	return marsh.Users, err
 }
 
+// ListUsers returns a list of all users matching filter
+//
+// Reference: https://developer.microsoft.com/en-us/graph/docs/api-reference/v1.0/api/user_list
+func (g *GraphClient) ListUsersWithFilter(filter string) (Users, error) {
+	resource := "/users"
+	var marsh struct {
+		Users Users `json:"value"`
+	}
+	params := url.Values{"$filter": []string{filter}}
+	err := g.makeGETAPICall(resource, params, &marsh)
+	marsh.Users.setGraphClient(g)
+	return marsh.Users, err
+}
+
 // ListGroups returns a list of all groups
 //
 // Reference: https://developer.microsoft.com/en-us/graph/docs/api-reference/v1.0/api/group_list
@@ -184,19 +237,16 @@ func (g *GraphClient) ListGroups() (Groups, error) {
 	return marsh.Groups, err
 }
 
-// ListGroups returns a list of all groups filtered by DisplayName
+// ListGroups returns a list of all groups matching filter
 //
 // Reference: https://developer.microsoft.com/en-us/graph/docs/api-reference/v1.0/api/group_list
-func (g *GraphClient) ListGroupsByName(groupName string) (Groups, error) {
+func (g *GraphClient) ListGroupsWithFilter(filter string) (Groups, error) {
 	resource := "/groups"
-	if groupName != "" {
-		resource += fmt.Sprintf("?$filter=DisplayName eq '%s'", groupName)
-	}
-
 	var marsh struct {
 		Groups Groups `json:"value"`
 	}
-	err := g.makeGETAPICall(resource, nil, &marsh)
+	params := url.Values{"$filter": []string{filter}}
+	err := g.makeGETAPICall(resource, params, &marsh)
 	marsh.Groups.setGraphClient(g)
 	return marsh.Groups, err
 }
@@ -271,18 +321,15 @@ func (g *GraphClient) ListDirectoryRoles() (DirectoryRoles, error) {
 	return marsh.DirectoryRoles, err
 }
 
-// List the directory roles that are activated in the tenant.
+// List the directory roles that are activated in the tenant and matching provided filter.
 // https://docs.microsoft.com/en-us/graph/api/directoryrole-list?view=graph-rest-1.0&tabs=http
-func (g *GraphClient) ListDirectoryRolesByName(roleName string) (DirectoryRoles, error) {
+func (g *GraphClient) ListDirectoryRolesByName(filter string) (DirectoryRoles, error) {
 	resource := "/directoryRoles"
-	if roleName != "" {
-		resource += fmt.Sprintf("?$filter=DisplayName eq '%s'", roleName)
-	}
-
 	var marsh struct {
 		DirectoryRoles DirectoryRoles `json:"value"`
 	}
-	err := g.makeGETAPICall(resource, nil, &marsh)
+	params := url.Values{"$filter": []string{filter}}
+	err := g.makeGETAPICall(resource, params, &marsh)
 	marsh.DirectoryRoles.setGraphClient(g)
 	return marsh.DirectoryRoles, err
 }

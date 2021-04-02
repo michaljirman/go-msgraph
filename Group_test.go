@@ -11,6 +11,7 @@ func GetTestGroup(t *testing.T) Group {
 	if err != nil {
 		t.Fatalf("Can not GraphClient.ListGroups(): %v", err)
 	}
+
 	groupTest, err := groups.GetByDisplayName(msGraphExistingGroupDisplayName)
 	if err != nil {
 		t.Fatalf("Can not groups.GetByDisplayName(%v): %v", msGraphExistingGroupDisplayName, err)
